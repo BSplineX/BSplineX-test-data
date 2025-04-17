@@ -3,12 +3,23 @@ import json
 import os
 from dataclasses import asdict, dataclass
 from typing import Type
+from concurrent.futures import ProcessPoolExecutor
+from functools import partial
 
 import numpy as np
-from reference import FloatArray, BoundaryCondition, BSpline, ClampedBSpline, Curve, OpenBSpline, PeriodicBSpline
+from reference import (
+    FloatArray,
+    BoundaryCondition,
+    BSpline,
+    ClampedBSpline,
+    Curve,
+    OpenBSpline,
+    PeriodicBSpline,
+)
 
-DENSE_NUM_KNOTS = 50
-SPARSE_NUM_KNOTS = 1000
+DENSE_NUM_KNOTS: int = 50
+SPARSE_NUM_KNOTS: int = 1000
+SEED: int = 42
 
 
 class NpEncoder(json.JSONEncoder):
@@ -49,6 +60,14 @@ class TestData:
     bspline_interp: BSplineData
 
 
+@dataclass
+class Task:
+    curve: Curve
+    bspline_cls: Type[BSpline]
+    degrees: list[int]
+    output_dir: str
+
+
 def get_bspline_data(bspline: BSpline, curve: Curve, x_eval: FloatArray) -> BSplineData:
     domain_left, domain_right = bspline.domain
     mask = (x_eval >= domain_left) & (x_eval <= domain_right)
@@ -62,7 +81,10 @@ def get_bspline_data(bspline: BSpline, curve: Curve, x_eval: FloatArray) -> BSpl
         ctrl=bspline.control_points,
         domain=bspline.domain,
         y_eval=bspline.evaluate(x_eval),
-        nnz_basis=[bspline.nnz_basis(x_nnz, derivative_order=i) for i in range(bspline.degree + 1)],
+        nnz_basis=[
+            bspline.nnz_basis(x_nnz, derivative_order=i)
+            for i in range(bspline.degree + 1)
+        ],
     )
 
 
@@ -101,7 +123,9 @@ def get_sorted_array(
     return x
 
 
-def get_x_y_sin(rng: np.random.Generator, curve: Curve, num_points: int) -> tuple[FloatArray, FloatArray]:
+def get_x_y_sin(
+    rng: np.random.Generator, curve: Curve, num_points: int
+) -> tuple[FloatArray, FloatArray]:
     x = get_sorted_array(rng, curve, 0, 2 * np.pi, num_points)
     y = np.sin(x)
 
@@ -109,7 +133,11 @@ def get_x_y_sin(rng: np.random.Generator, curve: Curve, num_points: int) -> tupl
 
 
 def make_bspline_data(
-    bspline_cls: Type[BSpline], rng: np.random.Generator, degree: int, curve: Curve, num_knots: int
+    bspline_cls: Type[BSpline],
+    rng: np.random.Generator,
+    degree: int,
+    curve: Curve,
+    num_knots: int,
 ) -> TestData:
     print(
         f"Generating test data for {bspline_cls().boundary_condition}, degree={degree}, curve={curve}, num_knots={num_knots}"
@@ -126,7 +154,9 @@ def make_bspline_data(
     mask = (x >= domain_left) & (x <= domain_right)
     bspline_fit.fit(x[mask], y[mask])
 
-    conditions_interp = get_additional_conditions(bspline_cls.required_additional_conditions(degree))
+    conditions_interp = get_additional_conditions(
+        bspline_cls.required_additional_conditions(degree)
+    )
     bspline_interp = bspline_cls.empty(degree)
     bspline_interp.interpolate(x, y, conditions_interp)
 
@@ -136,7 +166,10 @@ def make_bspline_data(
         x_eval=x_eval,
         conditions_interp=conditions_interp,
         bspline=get_bspline_data(bspline, curve, x_eval),
-        derivatives=[get_bspline_data(bspline.derivative(i), curve, x_eval) for i in range(1, degree + 1)],
+        derivatives=[
+            get_bspline_data(bspline.derivative(i), curve, x_eval)
+            for i in range(1, degree + 1)
+        ],
         bspline_fit=get_bspline_data(bspline_fit, curve, x_eval),
         bspline_interp=get_bspline_data(bspline_interp, curve, x_eval),
     )
@@ -146,40 +179,73 @@ def parse_args():
     parser = argparse.ArgumentParser(
         "Generate a JSON with test data for open, clamped, and periodic uniform/non-uniform BSplines"
     )
-    parser.add_argument("--degrees", required=True, nargs="+", type=int, help="list[int] BSpline degrees")
-    parser.add_argument("--output-dir", required=True, type=str, help="str output directory")
+    parser.add_argument(
+        "--degrees",
+        required=True,
+        nargs="+",
+        type=int,
+        help="list[int] BSpline degrees",
+    )
+    parser.add_argument(
+        "--output-dir", required=True, type=str, help="str output directory"
+    )
 
     return parser.parse_args()
+
+
+def generate_bspline_data(task: Task):
+    rng = np.random.default_rng(42)
+
+    data = []
+    for degree in task.degrees:
+        data.extend(
+            [
+                asdict(
+                    make_bspline_data(
+                        task.bspline_cls, rng, degree, task.curve, DENSE_NUM_KNOTS
+                    )
+                ),
+                asdict(
+                    make_bspline_data(
+                        task.bspline_cls, rng, degree, task.curve, SPARSE_NUM_KNOTS
+                    )
+                ),
+            ]
+        )
+    bc = task.bspline_cls().boundary_condition
+    p = os.path.join(task.output_dir, bc.value)
+    os.makedirs(p, exist_ok=True)
+
+    with open(os.path.join(p, f"{task.curve.value}.json"), "w") as f:
+        json.dump(data, f, cls=NpEncoder)
 
 
 def main():
     args = parse_args()
 
-    rng = np.random.default_rng(42)
     os.makedirs(args.output_dir, exist_ok=True)
 
-    for curve, bspline_cls in [
+    bsplines = [
         (Curve.UNIFORM, OpenBSpline),
         (Curve.NON_UNIFORM, OpenBSpline),
         (Curve.UNIFORM, ClampedBSpline),
         (Curve.NON_UNIFORM, ClampedBSpline),
         (Curve.UNIFORM, PeriodicBSpline),
         (Curve.NON_UNIFORM, PeriodicBSpline),
-    ]:
-        data = []
-        for degree in args.degrees:
-            data.extend(
-                [
-                    asdict(make_bspline_data(bspline_cls, rng, degree, curve, DENSE_NUM_KNOTS)),
-                    asdict(make_bspline_data(bspline_cls, rng, degree, curve, SPARSE_NUM_KNOTS)),
-                ]
-            )
-        bc = bspline_cls().boundary_condition
-        p = os.path.join(args.output_dir, bc.value)
-        os.makedirs(p, exist_ok=True)
+    ]
 
-        with open(os.path.join(p, f"{curve.value}.json"), "w") as f:
-            json.dump(data, f, cls=NpEncoder)
+    tasks = [
+        Task(
+            curve=bspline[0],
+            bspline_cls=bspline[1],
+            degrees=args.degrees,
+            output_dir=args.output_dir,
+        )
+        for bspline in bsplines
+    ]
+
+    with ProcessPoolExecutor() as executor:
+        executor.map(generate_bspline_data, tasks)
 
 
 if __name__ == "__main__":
