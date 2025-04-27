@@ -4,18 +4,9 @@ import os
 from dataclasses import asdict, dataclass
 from typing import Type
 from concurrent.futures import ProcessPoolExecutor
-from functools import partial
 
 import numpy as np
-from reference import (
-    FloatArray,
-    BoundaryCondition,
-    BSpline,
-    ClampedBSpline,
-    Curve,
-    OpenBSpline,
-    PeriodicBSpline,
-)
+from reference import FloatArray, BoundaryCondition, BSpline, ClampedBSpline, Curve, OpenBSpline, PeriodicBSpline
 
 DENSE_NUM_KNOTS: int = 50
 SPARSE_NUM_KNOTS: int = 1000
@@ -123,9 +114,7 @@ def get_sorted_array(
     return x
 
 
-def get_x_y_sin(
-    rng: np.random.Generator, curve: Curve, num_points: int
-) -> tuple[FloatArray, FloatArray]:
+def get_x_y_sin(rng: np.random.Generator, curve: Curve, num_points: int) -> tuple[FloatArray, FloatArray]:
     x = get_sorted_array(rng, curve, 0, 2 * np.pi, num_points)
     y = np.sin(x)
 
@@ -154,9 +143,7 @@ def make_bspline_data(
     mask = (x >= domain_left) & (x <= domain_right)
     bspline_fit.fit(x[mask], y[mask])
 
-    conditions_interp = get_additional_conditions(
-        bspline_cls.required_additional_conditions(degree)
-    )
+    conditions_interp = get_additional_conditions(bspline_cls.required_additional_conditions(degree))
     bspline_interp = bspline_cls.empty(degree)
     bspline_interp.interpolate(x, y, conditions_interp)
 
@@ -186,9 +173,7 @@ def parse_args():
         type=int,
         help="list[int] BSpline degrees",
     )
-    parser.add_argument(
-        "--output-dir", required=True, type=str, help="str output directory"
-    )
+    parser.add_argument("--output-dir", required=True, type=str, help="str output directory")
 
     return parser.parse_args()
 
@@ -200,16 +185,8 @@ def generate_bspline_data(task: Task):
     for degree in task.degrees:
         data.extend(
             [
-                asdict(
-                    make_bspline_data(
-                        task.bspline_cls, rng, degree, task.curve, DENSE_NUM_KNOTS
-                    )
-                ),
-                asdict(
-                    make_bspline_data(
-                        task.bspline_cls, rng, degree, task.curve, SPARSE_NUM_KNOTS
-                    )
-                ),
+                asdict(make_bspline_data(task.bspline_cls, rng, degree, task.curve, DENSE_NUM_KNOTS)),
+                asdict(make_bspline_data(task.bspline_cls, rng, degree, task.curve, SPARSE_NUM_KNOTS)),
             ]
         )
     bc = task.bspline_cls().boundary_condition
