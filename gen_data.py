@@ -37,6 +37,7 @@ class BSplineData:
     #   for each x_eval:
     #       the values of degree+1 non-zero basis, given as a tuple (start_index, list of values)
     nnz_basis: list[list[tuple[int, FloatArray]]]
+    derivative: "BSplineData | None"
 
 
 @dataclass
@@ -46,7 +47,6 @@ class TestData:
     x_eval: FloatArray  # used to eval
     conditions_interp: tuple[list[tuple[int, float]], list[tuple[int, float]]]
     bspline: BSplineData
-    derivatives: list[BSplineData]
     bspline_fit: BSplineData
     bspline_interp: BSplineData
 
@@ -72,10 +72,8 @@ def get_bspline_data(bspline: BSpline, curve: Curve, x_eval: FloatArray) -> BSpl
         ctrl=bspline.control_points,
         domain=bspline.domain,
         y_eval=bspline.evaluate(x_eval),
-        nnz_basis=[
-            bspline.nnz_basis(x_nnz, derivative_order=i)
-            for i in range(bspline.degree + 1)
-        ],
+        nnz_basis=[bspline.nnz_basis(x_nnz, derivative_order=i) for i in range(bspline.degree + 1)],
+        derivative=get_bspline_data(bspline.derivative(), curve, x_eval) if bspline.degree > 0 else None,
     )
 
 
@@ -153,10 +151,6 @@ def make_bspline_data(
         x_eval=x_eval,
         conditions_interp=conditions_interp,
         bspline=get_bspline_data(bspline, curve, x_eval),
-        derivatives=[
-            get_bspline_data(bspline.derivative(i), curve, x_eval)
-            for i in range(1, degree + 1)
-        ],
         bspline_fit=get_bspline_data(bspline_fit, curve, x_eval),
         bspline_interp=get_bspline_data(bspline_interp, curve, x_eval),
     )
