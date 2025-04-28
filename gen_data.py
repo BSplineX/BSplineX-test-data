@@ -4,18 +4,9 @@ import os
 from dataclasses import asdict, dataclass
 from typing import Type
 from concurrent.futures import ProcessPoolExecutor
-from functools import partial
 
 import numpy as np
-from reference import (
-    FloatArray,
-    BoundaryCondition,
-    BSpline,
-    ClampedBSpline,
-    Curve,
-    OpenBSpline,
-    PeriodicBSpline,
-)
+from reference import FloatArray, BoundaryCondition, BSpline, ClampedBSpline, Curve, OpenBSpline, PeriodicBSpline
 
 DENSE_NUM_KNOTS: int = 50
 SPARSE_NUM_KNOTS: int = 1000
@@ -46,6 +37,7 @@ class BSplineData:
     #   for each x_eval:
     #       the values of degree+1 non-zero basis, given as a tuple (start_index, list of values)
     nnz_basis: list[list[tuple[int, FloatArray]]]
+    derivative: "BSplineData | None"
 
 
 @dataclass
@@ -55,7 +47,6 @@ class TestData:
     x_eval: FloatArray  # used to eval
     conditions_interp: tuple[list[tuple[int, float]], list[tuple[int, float]]]
     bspline: BSplineData
-    derivatives: list[BSplineData]
     bspline_fit: BSplineData
     bspline_interp: BSplineData
 
@@ -81,10 +72,8 @@ def get_bspline_data(bspline: BSpline, curve: Curve, x_eval: FloatArray) -> BSpl
         ctrl=bspline.control_points,
         domain=bspline.domain,
         y_eval=bspline.evaluate(x_eval),
-        nnz_basis=[
-            bspline.nnz_basis(x_nnz, derivative_order=i)
-            for i in range(bspline.degree + 1)
-        ],
+        nnz_basis=[bspline.nnz_basis(x_nnz, derivative_order=i) for i in range(bspline.degree + 1)],
+        derivative=get_bspline_data(bspline.derivative(), curve, x_eval) if bspline.degree > 0 else None,
     )
 
 
@@ -123,9 +112,7 @@ def get_sorted_array(
     return x
 
 
-def get_x_y_sin(
-    rng: np.random.Generator, curve: Curve, num_points: int
-) -> tuple[FloatArray, FloatArray]:
+def get_x_y_sin(rng: np.random.Generator, curve: Curve, num_points: int) -> tuple[FloatArray, FloatArray]:
     x = get_sorted_array(rng, curve, 0, 2 * np.pi, num_points)
     y = np.sin(x)
 
@@ -154,9 +141,7 @@ def make_bspline_data(
     mask = (x >= domain_left) & (x <= domain_right)
     bspline_fit.fit(x[mask], y[mask])
 
-    conditions_interp = get_additional_conditions(
-        bspline_cls.required_additional_conditions(degree)
-    )
+    conditions_interp = get_additional_conditions(bspline_cls.required_additional_conditions(degree))
     bspline_interp = bspline_cls.empty(degree)
     bspline_interp.interpolate(x, y, conditions_interp)
 
@@ -166,10 +151,6 @@ def make_bspline_data(
         x_eval=x_eval,
         conditions_interp=conditions_interp,
         bspline=get_bspline_data(bspline, curve, x_eval),
-        derivatives=[
-            get_bspline_data(bspline.derivative(i), curve, x_eval)
-            for i in range(1, degree + 1)
-        ],
         bspline_fit=get_bspline_data(bspline_fit, curve, x_eval),
         bspline_interp=get_bspline_data(bspline_interp, curve, x_eval),
     )
@@ -186,9 +167,7 @@ def parse_args():
         type=int,
         help="list[int] BSpline degrees",
     )
-    parser.add_argument(
-        "--output-dir", required=True, type=str, help="str output directory"
-    )
+    parser.add_argument("--output-dir", required=True, type=str, help="str output directory")
 
     return parser.parse_args()
 
@@ -200,16 +179,8 @@ def generate_bspline_data(task: Task):
     for degree in task.degrees:
         data.extend(
             [
-                asdict(
-                    make_bspline_data(
-                        task.bspline_cls, rng, degree, task.curve, DENSE_NUM_KNOTS
-                    )
-                ),
-                asdict(
-                    make_bspline_data(
-                        task.bspline_cls, rng, degree, task.curve, SPARSE_NUM_KNOTS
-                    )
-                ),
+                asdict(make_bspline_data(task.bspline_cls, rng, degree, task.curve, DENSE_NUM_KNOTS)),
+                asdict(make_bspline_data(task.bspline_cls, rng, degree, task.curve, SPARSE_NUM_KNOTS)),
             ]
         )
     bc = task.bspline_cls().boundary_condition
